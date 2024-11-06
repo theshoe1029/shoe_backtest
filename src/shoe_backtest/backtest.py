@@ -1,103 +1,83 @@
-from dataclasses import dataclass
-from enum import Enum
-from typing import List, Mapping
-import numpy as np
+from typing import Callable, List, Mapping, Tuple
 import pandas as pd
-import numpy.typing as npt
+
+from shoe_backtest.portfolio import Portfolio
+from shoe_backtest.result import Result
+from shoe_backtest.typing import Side, Transaction
 
 
-class Side(Enum):
-    BUY = 1
-    SELL = -1
+def backtest_from_strategy(
+    price_data: pd.DataFrame,
+    cash: float,
+    commission: float,
+    strategy: Callable[[str, Portfolio, Tuple], List[Transaction]],
+    *strategy_args: Tuple,
+) -> List[pd.DataFrame]:
+    def supply_txns(date: str, pf: Portfolio) -> List[Transaction]:
+        txns = strategy(date, pf, strategy_args)
+        if txns is None:
+            raise Exception("A strategy must return a list on each date")
+        return txns
 
-
-@dataclass
-class Transaction:
-    date: pd.Timestamp
-    symbol: str
-    qty: int
-    side: Side
-
-
-def tx_with_price(tx: Transaction, price: np.float64):
-    return {
-        "date": tx.date,
-        "symbol": tx.symbol,
-        "qty": tx.qty,
-        "price": price,
-        "side": tx.side,
-    }
-
-
-class Portfolio:
-    def __init__(self, universe: pd.Series, cash: np.float64):
-        self.cash = cash
-        self.symbol_to_idx = {}
-        for idx, symbol in enumerate(universe):
-            self.symbol_to_idx[symbol] = idx
-        self.pos = np.zeros(len(self.symbol_to_idx))
-        self.avg_cost = np.zeros(len(self.symbol_to_idx))
-
-    def execute(self, tx: Transaction, price: np.float64):
-        idx = self.symbol_to_idx[tx.symbol]
-        cost = price * tx.qty * tx.side.value
-        self.cash -= cost
-        pos_new = self.pos[idx] + tx.qty * tx.side.value
-        if np.sign(pos_new) == 0:
-            self.avg_cost[idx] = 0
-        if np.sign(self.pos[idx]) != np.sign(pos_new):
-            self.avg_cost[idx] = cost
-        else:
-            self.avg_cost[idx] = (self.pos[idx] * self.avg_cost[idx] + cost) / pos_new
-        self.pos[idx] = pos_new
-
-    def get_pos(self) -> npt.NDArray:
-        return np.concat([self.pos, [self.cash]])
-
-    def get_mv(self) -> npt.NDArray:
-        return np.multiply(self.pos, self.avg_cost)
-
-
-class Result:
-    def __init__(self):
-        self.txns: List[Transaction] = []
-        self.positions: List = []
-        self.returns: List = []
-
-    def to_df(self, index) -> Mapping[str, pd.DataFrame]:
-        return {
-            "transactions": pd.DataFrame(self.txns),
-            "positions": pd.DataFrame(self.positions, index=index),
-            "returns": pd.Series(self.returns, index=index),
-        }
-
-
-def calculate_return(price: pd.Series, price_last: pd.Series, pfv: npt.NDArray):
-    if price_last is not None and pfv.sum() > 0:
-        w = pfv / pfv.sum()
-        r_inst = np.zeros_like(price)
-        np.divide(price - price_last, price_last, out=r_inst, where=price_last != 0)
-        return np.dot(w, r_inst)
-    return 0
+    return __backtest(supply_txns, price_data, cash, commission)
 
 
 def backtest_from_trades(
-    txns: Mapping[pd.Timestamp, List[Transaction]],
+    txns: Mapping[str, List[Transaction]],
     price_data: pd.DataFrame,
-    cash: np.float64,
-) -> Mapping[str, pd.DataFrame]:
-    universe = price_data.columns.get_level_values(1).drop_duplicates()
-    pf = Portfolio(universe, cash)
-    result = Result()
-    last_close = None
+    cash: float,
+    commission: float,
+) -> List[pd.DataFrame]:
+    def supply_txns(date: str, _: Portfolio) -> List[Transaction]:
+        return txns.get(date, [])
+
+    return __backtest(supply_txns, price_data, cash, commission)
+
+
+def backtest_from_positions(
+    history: Mapping[str, Mapping[str, float]],
+    price_data: pd.DataFrame,
+    cash: float,
+    commission: float,
+) -> List[pd.DataFrame]:
+    def supply_txns(date: str, pf: Portfolio) -> List[Transaction]:
+        return __txns_from_pos(date, pf, history.get(date, {}))
+
+    return __backtest(supply_txns, price_data, cash, commission)
+
+
+def __backtest(
+    supply_txns: Callable[[str, Portfolio], List[Transaction]],
+    price_data: pd.DataFrame,
+    cash: float,
+    commission: float,
+) -> List[pd.DataFrame]:
+    universe = __price_data_to_instruments(price_data)
+    pf = Portfolio(universe, cash, commission)
+    result = Result(price_data.index)
     for date, row in price_data.iterrows():
         close = row.loc["Close"]
-        for tx in txns.get(date, []):
-            price = close.loc[tx.symbol]
-            pf.execute(tx, price)
-            result.txns.append(tx_with_price(tx, price))
-        result.positions.append(pf.get_pos())
-        result.returns.append(calculate_return(close, last_close, pf.get_mv()))
-        last_close = close
+        txns = supply_txns(date, pf)
+        result.update(close, txns, pf)
+    return result.to_df()
 
-    return result.to_df(price_data.index)
+
+def __txns_from_pos(
+    date: str, pf: Portfolio, pos: Mapping[str, float]
+) -> List[Transaction]:
+    txns = []
+    for inst, qty in pos.items():
+        tx_qty = qty - pf.get_inst_pos(inst)
+        tx_side = Side.SELL if tx_qty < 0 else Side.BUY
+        tx = Transaction(
+            date=date,
+            symbol=inst,
+            qty=tx_qty,
+            side=tx_side,
+        )
+        txns.append(tx)
+    return txns
+
+
+def __price_data_to_instruments(price_data: pd.DataFrame) -> pd.Index:
+    return price_data.columns.get_level_values(1).drop_duplicates()

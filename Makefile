@@ -4,7 +4,7 @@ CODE_COVERAGE ?= 90
 OS ?= $(shell python -c 'import platform; print(platform.system())')
 IS_64_BIT ?= $(shell python -c 'from sys import maxsize; print(maxsize > 2**32)')
 
-all: environment install validate test
+all: environment install validate auto-lint
 
 environment:
 	@echo 🔧 PIPENV SETUP
@@ -39,6 +39,19 @@ install-linux:
 
 install-windows:
 	@echo 🏁 WINDOWS INSTALL
+
+auto-lint:
+	@echo 💚 AUTO LINT
+	@echo Reformatting using Ruff
+	pipenv run ruff format
+	make lint
+	
+lint:
+	@echo 💚 LINT
+	@echo 1.Ruff Lint
+	pipenv run ruff check
+	@echo 2.Mypy Static Typing
+	pipenv run mypy src setup.py
 
 validate: 
 	@echo ✅ VALIDATE

@@ -10,6 +10,12 @@ setuptools = "*"
 pandas = "*"
 
 [dev-packages]
+mypy = "*"
+yfinance = "*"
+ipykernel = "*"
+nbqa = "*"
+pyfolio-reloaded = "*"
+zipline-reloaded = "*"
 
 [requires]
 python_version = "3.10"
