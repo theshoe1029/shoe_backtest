@@ -1,5 +1,6 @@
 from typing import List
 import pandas as pd
+import numpy.typing as npt
 
 from shoe_backtest.portfolio import Portfolio
 from shoe_backtest.typing import PyfolioTransaction, Transaction
@@ -14,13 +15,13 @@ class Result:
 
     def update(
         self,
-        close: pd.Series,
+        close: npt.NDArray,
         txns: List[Transaction],
         pf: Portfolio,
     ) -> None:
         self.returns.append(pf.compute_return(close))
         for tx in txns:
-            price = close.loc[tx.symbol]
+            price = close[pf.symbol_to_idx[tx.symbol]]
             pf.execute(tx, price)
             self.txns.append(
                 PyfolioTransaction(
